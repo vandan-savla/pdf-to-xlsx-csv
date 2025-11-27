@@ -1,73 +1,70 @@
-# Extract text from the uploaded PDF and create CSV and XLSX files.
-# The output files will be saved to /mnt/data/hr_list.csv and /mnt/data/hr_list.xlsx
-# We'll parse each line looking for rows that start with a serial number and an email,
-# and keep the remaining text as a combined "Title_and_Company" field when finer splitting isn't reliable.
-
-from pathlib import Path
-import re
+import io
+import pdfplumber
 import pandas as pd
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
-pdf_path = Path("file_name.pdf")
-assert pdf_path.exists(), "PDF not found at hr_list.pdf"
+app = FastAPI()
 
-# Try using pdfplumber if available; otherwise fallback to PyPDF2 text extraction.
-text = ""
-try:
-    import pdfplumber
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        for p in pdf.pages:
-            page_text = p.extract_text(x_tolerance=2, y_tolerance=2)
-            if page_text:
-                text += page_text + "\n"
-except Exception as e:
-    # fallback to PyPDF2
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+async def read_index():
+    with open("static/index.html", "r") as f:
+        return Response(content=f.read(), media_type="text/html")
+
+@app.post("/extract")
+async def extract_tables(file: UploadFile = File(...)):
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+
     try:
-        import PyPDF2
-        with open(pdf_path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            for page in reader.pages:
-                try:
-                    text += page.extract_text() + "\n"
-                except:
-                    pass
-    except Exception as e2:
-        raise RuntimeError("Failed to extract text from PDF: " + str(e2))
+        content = await file.read()
+        pdf_file = io.BytesIO(content)
+        
+        all_data = []
+        
+        with pdfplumber.open(pdf_file) as pdf:
+            for i, page in enumerate(pdf.pages):
+                tables = page.extract_tables()
+                for j, table in enumerate(tables):
+                    if table and len(table) > 0:
+                        # Just append all rows from the table
+                        all_data.extend(table)
+        
+        if not all_data:
+            raise HTTPException(status_code=404, detail="No tables found in PDF")
+        
+        # Create DataFrame from all merged data
+        # First row is header, rest are data
+        df = pd.DataFrame(all_data[1:], columns=all_data[0])
+        
+        # Write to Excel
+        excel_buffer = io.BytesIO()
+        df.to_excel(excel_buffer, index=False, engine='openpyxl')
+        excel_buffer.seek(0)
+        
+        return Response(
+            content=excel_buffer.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={file.filename.split('.')[0]}.xlsx"}
+        )
 
-# Normalize whitespace
-lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-rows = []
-# Regex: start with number(s), then name (greedy up to an email), then email, then rest
-pattern = re.compile(r'^(\d+)\s+(.+?)\s+(\S+@\S+)\s+(.*)$')
-
-for ln in lines:
-    m = pattern.match(ln)
-    if m:
-        sno = m.group(1)
-        name = m.group(2)
-        email = m.group(3)
-        rest = m.group(4).strip()
-        # Heuristic: sometimes the rest contains both Title and Company. We'll keep it as-is in one field.
-        title_and_company = rest
-        rows.append({"SNo": sno, "Name": name, "Email": email, "Title_and_Company": title_and_company})
-    else:
-        # If a line doesn't match, it may be continuation of previous 'rest' (multiline row).
-        # Attach it to the last row's Title_and_Company if plausible.
-        if rows:
-            rows[-1]["Title_and_Company"] += " " + ln
-
-# Convert to DataFrame
-df = pd.DataFrame(rows)
-
-# Save CSV and XLSX
-csv_path = "file_name.csv"
-xlsx_path = "file_name.xlsx"
-df.to_csv(csv_path, index=False)
-df.to_excel(xlsx_path, index=False)
-
-# Display a preview to the user (first 10 rows) using the UI helper
-# import ace_tools as tools; tools.display_dataframe_to_user("HR list preview (first 10 rows)", df.head(10))
-
-# Provide file paths for download
-print(f"Saved CSV to: {csv_path}")
-print(f"Saved Excel to: {xlsx_path}")
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
