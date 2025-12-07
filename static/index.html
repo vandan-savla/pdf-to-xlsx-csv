@@ -89,13 +89,16 @@
     <div class="container">
         <h1>PDF Table Extractor</h1>
         <input type="file" id="pdfFile" accept=".pdf">
-        <button onclick="uploadFile()">Extract Tables</button>
+        <div style="display: flex; gap: 1rem;">
+            <button onclick="uploadFile('csv')">Extract in CSV</button>
+            <button onclick="uploadFile('xlsx')">Extract in XLSX</button>
+        </div>
         <div id="loader" class="loader"></div>
         <div id="result"></div>
     </div>
 
     <script>
-        async function uploadFile() {
+        async function uploadFile(format) {
             const fileInput = document.getElementById('pdfFile');
             const file = fileInput.files[0];
             if (!file) {
@@ -113,7 +116,7 @@
             loader.style.display = 'block';
 
             try {
-                const response = await fetch('/extract', {
+                const response = await fetch(`/extract-${format}`, {
                     method: 'POST',
                     body: formData
                 });

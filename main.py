@@ -25,7 +25,7 @@ async def read_index():
     with open("static/index.html", "r") as f:
         return Response(content=f.read(), media_type="text/html")
 
-@app.post("/extract")
+@app.post("/extract-xlsx")
 async def extract_tables(file: UploadFile = File(...)):
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="File must be a PDF")
@@ -64,6 +64,47 @@ async def extract_tables(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/extract-csv")
+async def extract_tables(file: UploadFile = File(...)):
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+
+    try:
+        content = await file.read()
+        pdf_file = io.BytesIO(content)
+        
+        all_data = []
+        
+        with pdfplumber.open(pdf_file) as pdf:
+            for i, page in enumerate(pdf.pages):
+                tables = page.extract_tables()
+                for j, table in enumerate(tables):
+                    if table and len(table) > 0:
+                        # Just append all rows from the table
+                        all_data.extend(table)
+        
+        if not all_data:
+            raise HTTPException(status_code=404, detail="No tables found in PDF")
+        
+        # Create DataFrame from all merged data
+        # First row is header, rest are data
+        df = pd.DataFrame(all_data[1:], columns=all_data[0])
+        
+        # Write to CSV
+        csv_buffer = io.BytesIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_buffer.seek(0)
+        
+        return Response(
+            content=csv_buffer.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={file.filename.split('.')[0]}.csv"}
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
