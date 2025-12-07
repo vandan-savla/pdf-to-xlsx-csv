@@ -4,3 +4,4 @@ python-multipart
 pdfplumber
 pandas
 openpyxl
+pypdf>=3.0.0
